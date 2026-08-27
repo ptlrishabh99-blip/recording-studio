@@ -25,6 +25,14 @@ tool for finished (VOD) streams: point it at an `.m3u8` whose playlist is
 already complete (ends with `#EXT-X-ENDLIST`) and ffmpeg races through the
 existing segments instead of waiting in real time -- "fast" mode races
 through them fastest since there's no encoding work to do.
+
+Every command also carries ffmpeg's own HTTP(S) reconnect options, so a
+brief network blip during a long live recording is handled inside the
+same ffmpeg process (no dropped frames in the output) rather than killing
+it outright. For a drop severe enough that ffmpeg still exits, the app
+layer (`main_window.py`'s `_handle_unexpected_stop`) automatically starts
+a fresh recording and keeps going, so a live capture stays smooth even
+through the ffmpeg process dying and being replaced.
 """
 from __future__ import annotations
 
@@ -137,6 +145,18 @@ class Recorder:
         output_path = self._build_output_path()
 
         cmd = [ffmpeg, "-y"]
+        # Ask ffmpeg's HTTP(S) layer to itself retry a dropped/stalled
+        # connection (a brief network hiccup, a slow segment) before ever
+        # giving up and exiting -- this is the first, cheapest line of
+        # defense for a smooth live recording, handled inside the same
+        # process so the output file isn't interrupted at all.
+        cmd += [
+            "-reconnect", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_at_eof", "1",
+            "-reconnect_delay_max", "5",
+            "-rw_timeout", "15000000",
+        ]
         if cfg.start_seconds:
             # An input-side -ss (before -i) lets ffmpeg's HLS demuxer skip
             # straight to the segment containing this timestamp instead of
