@@ -7,6 +7,11 @@ setup, a licensed feed, a personal IP camera, and similar. It targets
 rate, and supports:
 
 - Full-file recording, or fixed-length clips (3 min / 5 min)
+- Also works as a download-and-convert tool for a stream that's already
+  over: point it at a finished (VOD) `.m3u8` and it races through the
+  existing segments instead of waiting in real time
+- Always converts to a standard, universally-playable H.264/AAC MP4,
+  regardless of the source's original codec
 - An optional auto-stop recording timer
 - A live preview pane so you can confirm you're pointed at the right feed
 - Custom output file name and save-location picker
@@ -28,12 +33,13 @@ service.
   (adaptive bitrate), it parses the `#EXT-X-STREAM-INF` renditions and
   picks the one closest to 1080p — exact match preferred, otherwise the
   highest rendition at or below 1080p.
-- `recorder.py` builds and runs the ffmpeg command. If the chosen
-  rendition is already 1080p, it uses `-c copy` (lossless stream copy —
-  no re-encode, original variable frame timing preserved exactly). If the
-  source needs to be scaled up/down to reach 1080p, it transcodes with
-  `libx264` and `-vsync vfr` so the output still follows the source's
-  natural frame timing instead of being forced to a constant fps.
+- `recorder.py` builds and runs the ffmpeg command. Every recording is
+  re-encoded with `libx264`/`aac` and `-vsync vfr` (so the output still
+  follows the source's natural, variable frame timing instead of being
+  forced to a constant fps) into a standard MP4 — never a raw `-c copy`
+  remux of whatever codec the source happens to use. A scale filter is
+  added only when the chosen rendition isn't already 1080p; otherwise it
+  encodes at that native resolution.
 - `preview.py` runs a separate low-fps OpenCV read of the stream just for
   the on-screen preview, so it doesn't interfere with the recording
   process.
@@ -130,11 +136,20 @@ does exactly that for you).
   connection you may want to disable it while recording (stop the app,
   or add a "pause preview during recording" toggle — the `PreviewThread`
   in `preview.py` already exposes `.stop()`).
-- Segmented mode uses ffmpeg's `segment` muxer with `-c copy`, which cuts
-  on the nearest source keyframe rather than an exact frame boundary —
-  fine for highlight-style clipping, but clip boundaries can be off by up
-  to a couple of seconds depending on the source's keyframe interval.
 - There's no retry/reconnect logic if the source stream drops mid-recording
   — ffmpeg will exit and the app will report "ffmpeg process ended." Add
   reconnect logic in `main_window.py`'s `_tick`/`_finish_recording` if you
   need that for long unattended recordings.
+- Because every recording is re-encoded rather than stream-copied, it's
+  CPU-bound: a long finished (VOD) stream downloads faster than real
+  time, but not instantly, and a slower machine may fall behind a fast
+  live stream at very high resolutions. `-preset veryfast` is chosen for
+  a reasonable speed/quality balance; trade some encode speed for a
+  smaller file by changing the `-preset`/`-crf` values in
+  `recorder.py`'s `build_command`.
+- There's currently no UI distinction between a live stream and a
+  finished (VOD) one — pointing "Start recording" at a VOD `.m3u8` works
+  (ffmpeg races through the existing segments), but the live preview and
+  elapsed-time display still behave as if it were live. Detecting
+  `#EXT-X-ENDLIST` in `hls_utils.py` and switching to a download-progress
+  UI for that case would be a good next step.
