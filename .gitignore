@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# PyInstaller build output
+build/
+dist/
+*.spec.bak
+
+# ffmpeg binary fetched for bundling (fetched fresh by CI, not committed)
+vendor/
+
+# Inno Setup output
+packaging/windows/Output/
+
+# OS cruft
+.DS_Store
+Thumbs.db
