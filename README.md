@@ -10,6 +10,9 @@ rate, and supports:
 - Also works as a download-and-convert tool for a stream that's already
   over: point it at a finished (VOD) `.m3u8` and it races through the
   existing segments instead of waiting in real time
+- For finished (VOD) streams, a draggable clip timeline lets you trim to
+  just a range instead of downloading the whole thing — ffmpeg seeks
+  straight to that range rather than fetching the full stream first
 - Always converts to a standard, universally-playable H.264/AAC MP4,
   regardless of the source's original codec
 - An optional auto-stop recording timer
@@ -32,7 +35,15 @@ service.
 - `hls_utils.py` fetches the `.m3u8` playlist. If it's a master playlist
   (adaptive bitrate), it parses the `#EXT-X-STREAM-INF` renditions and
   picks the one closest to 1080p — exact match preferred, otherwise the
-  highest rendition at or below 1080p.
+  highest rendition at or below 1080p. It also probes the chosen media
+  playlist for `#EXT-X-ENDLIST` (a finished/VOD stream) and, when present,
+  sums every `#EXTINF` entry to get the stream's total duration — that's
+  what drives the clip timeline.
+- `timeline_widget.py` is a small self-contained Qt widget: a horizontal
+  bar with two draggable handles marking a clip's start and end, used
+  only once a loaded stream turns out to be a finished VOD with a known
+  duration. Dragging inside the selected range (not on a handle) moves
+  both handles together instead of resizing.
 - `recorder.py` builds and runs the ffmpeg command. Every recording is
   re-encoded with `libx264`/`aac` and `-vsync vfr` (so the output still
   follows the source's natural, variable frame timing instead of being
@@ -147,9 +158,11 @@ does exactly that for you).
   a reasonable speed/quality balance; trade some encode speed for a
   smaller file by changing the `-preset`/`-crf` values in
   `recorder.py`'s `build_command`.
-- There's currently no UI distinction between a live stream and a
-  finished (VOD) one — pointing "Start recording" at a VOD `.m3u8` works
-  (ffmpeg races through the existing segments), but the live preview and
-  elapsed-time display still behave as if it were live. Detecting
-  `#EXT-X-ENDLIST` in `hls_utils.py` and switching to a download-progress
-  UI for that case would be a good next step.
+- A finished (VOD) stream now gets its own clip timeline (see above), but
+  the elapsed-time display during the download still counts up like a
+  stopwatch rather than showing real download progress (e.g. "record
+  350/3600 of the source's segments") — the live preview also still
+  tries to start for a VOD the same as for a live stream, which is
+  pointless once the stream has ended. A progress bar driven by ffmpeg's
+  own progress output (`-progress pipe:1`, parsed in `recorder.py`'s
+  `readline`) would be a good next step.
