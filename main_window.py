@@ -104,6 +104,18 @@ class MainWindow(QMainWindow):
         mode_row.addStretch(1)
         options_layout.addLayout(mode_row)
 
+        format_row = QHBoxLayout()
+        format_row.addWidget(QLabel("Output:"))
+        self.format_group = QButtonGroup(self)
+        self.radio_fast = QRadioButton("Fast (original codec, no re-encode)")
+        self.radio_convert = QRadioButton("Convert to standard MP4 (H.264/AAC, slower)")
+        self.radio_fast.setChecked(True)
+        for i, rb in enumerate((self.radio_fast, self.radio_convert)):
+            self.format_group.addButton(rb, i)
+            format_row.addWidget(rb)
+        format_row.addStretch(1)
+        options_layout.addLayout(format_row)
+
         timer_row = QHBoxLayout()
         self.timer_checkbox = QCheckBox("Stop recording automatically after")
         self.timer_spin = QSpinBox()
@@ -186,24 +198,18 @@ class MainWindow(QMainWindow):
             self.needs_scaling = True
             info = (
                 f"Closest available rendition: {variant.label()}.\n"
-                f"Source has no native 1080p rendition, so recording will "
-                f"scale to 1080p and re-encode to H.264/AAC MP4 while "
-                f"keeping the source's variable frame timing."
+                f"Source has no native 1080p rendition -- \"Fast\" below "
+                f"downloads it as-is at this resolution; \"Convert to "
+                f"standard MP4\" scales it up to 1080p while re-encoding."
             )
         elif variant:
             self.needs_scaling = False
-            info = (
-                f"Selected 1080p rendition: {variant.label()}. Recording "
-                f"will re-encode to a standard H.264/AAC MP4 at the "
-                f"source's native 1080p resolution."
-            )
+            info = f"Selected 1080p rendition: {variant.label()}."
         else:
             self.needs_scaling = False
             info = (
                 "Single-rendition stream (no adaptive variants "
-                "advertised). Recording will re-encode to a standard "
-                "H.264/AAC MP4 at the source's native resolution and "
-                "frame rate."
+                "advertised)."
             )
 
         if all_variants:
@@ -289,6 +295,8 @@ class MainWindow(QMainWindow):
         elif self.timer_checkbox.isChecked():
             duration_seconds = self.timer_spin.value() * 60
 
+        output_format = "mp4" if self.radio_convert.isChecked() else "fast"
+
         config = RecordingConfig(
             stream_url=self.resolved_url,
             output_dir=self.location_edit.text().strip() or os.path.expanduser("~"),
@@ -297,6 +305,7 @@ class MainWindow(QMainWindow):
             segment_seconds=segment_seconds,
             duration_seconds=duration_seconds,
             start_seconds=start_seconds,
+            output_format=output_format,
             needs_scaling=self.needs_scaling,
         )
 
