@@ -41,6 +41,16 @@ jobs:
         env:
           APP_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '0.0.0-dev' }}
 
+      - name: Ad-hoc sign the app bundle
+        # Apple Silicon refuses to run ANY unsigned arm64 binary at all (not
+        # just a Gatekeeper warning -- a flat "can't be opened"). PyInstaller
+        # ad-hoc signs the main executable during the build, but the bundled
+        # ffmpeg binary and Qt frameworks added afterwards aren't covered by
+        # that signature, which leaves the .app's overall seal inconsistent.
+        # Re-signing the whole bundle in one pass (still ad-hoc -- no paid
+        # Apple Developer account needed) fixes both problems at once.
+        run: codesign --force --deep --sign - "dist/HLS Capture Studio.app"
+
       - name: Package as a .dmg
         run: |
           mkdir -p dist/dmg
