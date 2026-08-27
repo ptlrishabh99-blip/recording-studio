@@ -261,7 +261,14 @@ class MainWindow(QMainWindow):
     def _stop_preview(self):
         if self.preview_thread:
             self.preview_thread.stop()
-            self.preview_thread.wait(2000)
+            # cv2.VideoCapture's blocking open/read calls can outlast a
+            # short, cooperative wait -- if the thread hasn't actually
+            # exited by then, force it rather than dropping our only
+            # reference to a QThread whose OS thread is still running
+            # (Qt aborts the process when that object gets destroyed).
+            if not self.preview_thread.wait(2000):
+                self.preview_thread.terminate()
+                self.preview_thread.wait(1000)
             self.preview_thread = None
 
     def _on_preview_frame(self, qimg):
