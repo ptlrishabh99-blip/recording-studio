@@ -17,6 +17,17 @@ from timeline_widget import ClipTimeline, format_hhmmss
 
 
 class MainWindow(QMainWindow):
+    # If ffmpeg's own reconnect options (see recorder.py) aren't enough
+    # and the process actually exits mid-recording, keep retrying a
+    # bounded number of times before giving up -- a live stream can have
+    # a real, brief outage (not just a network blip) and still come back.
+    _MAX_RECONNECT_ATTEMPTS = 5
+    _RECONNECT_DELAY_MS = 3000
+    # A recorder that stayed up at least this long before dying earns a
+    # fresh set of retry attempts on its next drop, rather than counting
+    # every drop over a long recording against the same small budget.
+    _RECONNECT_RESET_AFTER_SECONDS = 20
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("HLS Capture Studio")
@@ -27,6 +38,8 @@ class MainWindow(QMainWindow):
         self.resolved_url: str | None = None
         self.needs_scaling = False
         self.is_vod = False
+        self._reconnect_attempts = 0
+        self._recorder_started_at_tick = 0
 
         self.elapsed_seconds = 0
         self.record_timer = QTimer(self)
@@ -326,6 +339,8 @@ class MainWindow(QMainWindow):
 
         self._log(f"Recording started -> {output_path}")
         self.elapsed_seconds = 0
+        self._reconnect_attempts = 0
+        self._recorder_started_at_tick = 0
         self.record_timer.start()
         self.log_poll_timer.start()
         self.start_btn.setEnabled(False)
@@ -336,16 +351,24 @@ class MainWindow(QMainWindow):
     def on_stop(self):
         self._finish_recording(user_initiated=True)
 
-    def _finish_recording(self, user_initiated: bool):
+    def _finish_recording(self, user_initiated: bool, reason: str | None = None):
         if self.recorder:
             self.recorder.stop()
-            self._log("Recording stopped." if user_initiated else "Recording timer elapsed; stopping.")
+            if user_initiated:
+                self._log("Recording stopped.")
+            else:
+                self._log(reason or "Recording timer elapsed; stopping.")
         self.record_timer.stop()
         self.log_poll_timer.stop()
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.load_btn.setEnabled(True)
         self.status_label.setText("Idle.")
+        # Drops the reference to the (now finished/stopped) Recorder so a
+        # reconnect attempt already queued via QTimer.singleShot sees
+        # `self.recorder is None` and no-ops instead of restarting a
+        # recording the user just deliberately stopped.
+        self.recorder = None
 
     def _tick(self):
         self.elapsed_seconds += 1
@@ -354,10 +377,66 @@ class MainWindow(QMainWindow):
             self._finish_recording(user_initiated=False)
             return
         if self.recorder and not self.recorder.is_running():
-            self._log("ffmpeg process ended.")
-            self._finish_recording(user_initiated=False)
+            self._handle_unexpected_stop()
             return
         self._update_status()
+
+    def _handle_unexpected_stop(self):
+        """The ffmpeg process ended on its own, outside of our own
+        duration-limit check above. That's either a clean finish (a VOD
+        source ran out of segments, or ffmpeg's own `-t` fired a hair
+        before our timer tick did) or a real drop -- distinguish the two
+        by exit code, and for a real drop, auto-restart the recording
+        (into a new output file, same as segmented mode already does)
+        instead of just surfacing an error and stopping."""
+        process = self.recorder.process if self.recorder else None
+        returncode = process.returncode if process else None
+
+        if returncode == 0:
+            self._finish_recording(user_initiated=False, reason="Recording finished.")
+            return
+
+        survived = self.elapsed_seconds - self._recorder_started_at_tick
+        if survived >= self._RECONNECT_RESET_AFTER_SECONDS:
+            self._reconnect_attempts = 0
+        self._reconnect_attempts += 1
+
+        if self._reconnect_attempts > self._MAX_RECONNECT_ATTEMPTS:
+            self._finish_recording(
+                user_initiated=False,
+                reason=(
+                    f"Stream did not come back after "
+                    f"{self._MAX_RECONNECT_ATTEMPTS} reconnect attempts -- stopping."
+                ),
+            )
+            return
+
+        self.record_timer.stop()
+        self.log_poll_timer.stop()
+        self._log(
+            f"Stream interrupted (exit code {returncode}) -- reconnecting "
+            f"(attempt {self._reconnect_attempts}/{self._MAX_RECONNECT_ATTEMPTS})..."
+        )
+        self.status_label.setText(
+            f"Reconnecting... (attempt {self._reconnect_attempts}/{self._MAX_RECONNECT_ATTEMPTS})"
+        )
+        QTimer.singleShot(self._RECONNECT_DELAY_MS, self._reconnect)
+
+    def _reconnect(self):
+        if not self.recorder:
+            return  # the user hit Stop while we were waiting to retry
+        cfg = self.recorder.config
+        self.recorder = Recorder(cfg)
+        try:
+            output_path = self.recorder.start()
+        except RecordingError as exc:
+            self._log(f"Reconnect failed: {exc}")
+            self._finish_recording(user_initiated=False, reason="Could not reconnect; stopping.")
+            return
+        self._recorder_started_at_tick = self.elapsed_seconds
+        self._log(f"Reconnected -> {output_path}")
+        self.record_timer.start()
+        self.log_poll_timer.start()
 
     def _update_status(self):
         mins, secs = divmod(self.elapsed_seconds, 60)
