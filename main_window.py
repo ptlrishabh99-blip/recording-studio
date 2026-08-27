@@ -24,7 +24,7 @@ class MainWindow(QMainWindow):
         self.recorder: Recorder | None = None
         self.preview_thread: PreviewThread | None = None
         self.resolved_url: str | None = None
-        self.needs_transcode = False
+        self.needs_scaling = False
 
         self.elapsed_seconds = 0
         self.record_timer = QTimer(self)
@@ -169,19 +169,28 @@ class MainWindow(QMainWindow):
 
         self.resolved_url = resolved_url
         if variant and variant.height and variant.height != 1080:
-            self.needs_transcode = True
+            self.needs_scaling = True
             info = (
                 f"Closest available rendition: {variant.label()}.\n"
                 f"Source has no native 1080p rendition, so recording will "
-                f"scale to 1080p (re-encode) while keeping the source's "
-                f"variable frame timing."
+                f"scale to 1080p and re-encode to H.264/AAC MP4 while "
+                f"keeping the source's variable frame timing."
             )
         elif variant:
-            self.needs_transcode = False
-            info = f"Selected 1080p rendition: {variant.label()}. Recording will use lossless stream copy."
+            self.needs_scaling = False
+            info = (
+                f"Selected 1080p rendition: {variant.label()}. Recording "
+                f"will re-encode to a standard H.264/AAC MP4 at the "
+                f"source's native 1080p resolution."
+            )
         else:
-            self.needs_transcode = False
-            info = "Single-rendition stream (no adaptive variants advertised). Recording will use lossless stream copy at the source's native resolution and frame rate."
+            self.needs_scaling = False
+            info = (
+                "Single-rendition stream (no adaptive variants "
+                "advertised). Recording will re-encode to a standard "
+                "H.264/AAC MP4 at the source's native resolution and "
+                "frame rate."
+            )
 
         if all_variants:
             info += "\nAll available renditions: " + "; ".join(v.label() for v in all_variants)
@@ -233,7 +242,7 @@ class MainWindow(QMainWindow):
             mode=mode,
             segment_seconds=segment_seconds,
             duration_seconds=duration_seconds,
-            needs_transcode=self.needs_transcode,
+            needs_scaling=self.needs_scaling,
         )
 
         self.recorder = Recorder(config)
