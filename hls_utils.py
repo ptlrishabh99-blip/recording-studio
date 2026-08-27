@@ -126,3 +126,41 @@ def resolve_stream(url: str, target_height: int = 1080):
             raise StreamProbeError("Master playlist had no usable renditions.")
         return best.url, best, variants
     return url, None, []
+
+
+_EXTINF_RE = re.compile(r"#EXTINF:\s*([\d.]+)")
+
+
+@dataclass
+class MediaPlaylistInfo:
+    is_vod: bool
+    duration_seconds: Optional[float]
+    segment_count: int
+
+
+def probe_media_playlist(url: str, timeout: float = 10.0) -> MediaPlaylistInfo:
+    """Fetch a *media* playlist -- the actual segment list ffmpeg reads
+    from, i.e. the `chosen_media_url` resolve_stream() returns -- and
+    report whether it's a finished VOD (carries `#EXT-X-ENDLIST`) and,
+    if so, its total duration by summing every `#EXTINF` entry.
+
+    A live (sliding-window) playlist has no `#EXT-X-ENDLIST` and its
+    listed segments are only the last few seconds/minutes of the
+    broadcast, so `duration_seconds` there reflects that current window,
+    not the whole live event -- callers should treat `is_vod` as the
+    real signal for "does a fixed timeline exist to clip from".
+    """
+    text = fetch_playlist(url, timeout=timeout)
+    is_vod = "#EXT-X-ENDLIST" in text
+    total = 0.0
+    count = 0
+    for line in text.splitlines():
+        m = _EXTINF_RE.match(line.strip())
+        if m:
+            total += float(m.group(1))
+            count += 1
+    return MediaPlaylistInfo(
+        is_vod=is_vod,
+        duration_seconds=total if count else None,
+        segment_count=count,
+    )
