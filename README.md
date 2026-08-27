@@ -13,8 +13,11 @@ rate, and supports:
 - For finished (VOD) streams, a draggable clip timeline lets you trim to
   just a range instead of downloading the whole thing — ffmpeg seeks
   straight to that range rather than fetching the full stream first
-- Always converts to a standard, universally-playable H.264/AAC MP4,
-  regardless of the source's original codec
+- Two output modes: **Fast** (default) keeps the source's original codec
+  and just copies the stream — no re-encoding, so it's limited only by
+  your connection/disk speed; **Convert to standard MP4** re-encodes to
+  universally-playable H.264/AAC, regardless of the source's original
+  codec, at the cost of encoding speed
 - An optional auto-stop recording timer
 - A live preview pane so you can confirm you're pointed at the right feed
 - Custom output file name and save-location picker
@@ -44,13 +47,14 @@ service.
   only once a loaded stream turns out to be a finished VOD with a known
   duration. Dragging inside the selected range (not on a handle) moves
   both handles together instead of resizing.
-- `recorder.py` builds and runs the ffmpeg command. Every recording is
-  re-encoded with `libx264`/`aac` and `-vsync vfr` (so the output still
-  follows the source's natural, variable frame timing instead of being
-  forced to a constant fps) into a standard MP4 — never a raw `-c copy`
-  remux of whatever codec the source happens to use. A scale filter is
-  added only when the chosen rendition isn't already 1080p; otherwise it
-  encodes at that native resolution.
+- `recorder.py` builds and runs the ffmpeg command. In **Fast** mode
+  (default) it's a raw `-c copy` remux — no re-encoding, keeps the
+  source's original codec/resolution/frame timing exactly as-is, and
+  downloads as fast as your connection and disk allow. In **Convert to
+  standard MP4** mode it re-encodes with `libx264`/`aac` and `-vsync vfr`
+  (so the output still follows the source's natural, variable frame
+  timing instead of being forced to a constant fps); a scale filter is
+  added only when the chosen rendition isn't already 1080p.
 - `preview.py` runs a separate low-fps OpenCV read of the stream just for
   the on-screen preview, so it doesn't interfere with the recording
   process.
@@ -151,13 +155,15 @@ does exactly that for you).
   — ffmpeg will exit and the app will report "ffmpeg process ended." Add
   reconnect logic in `main_window.py`'s `_tick`/`_finish_recording` if you
   need that for long unattended recordings.
-- Because every recording is re-encoded rather than stream-copied, it's
-  CPU-bound: a long finished (VOD) stream downloads faster than real
-  time, but not instantly, and a slower machine may fall behind a fast
-  live stream at very high resolutions. `-preset veryfast` is chosen for
-  a reasonable speed/quality balance; trade some encode speed for a
-  smaller file by changing the `-preset`/`-crf` values in
-  `recorder.py`'s `build_command`.
+- **Fast** mode is stream-copy only, so it can't scale resolution or fix
+  up a codec the source uses — it downloads exactly what's there.
+  **Convert to standard MP4** mode re-encodes, so it's CPU-bound: a long
+  finished (VOD) stream still downloads faster than real time, but not
+  instantly, and a slower machine may fall behind a fast live stream at
+  very high resolutions. `-preset veryfast` is chosen for a reasonable
+  speed/quality balance there; trade some encode speed for a smaller file
+  by changing the `-preset`/`-crf` values in `recorder.py`'s
+  `build_command`.
 - A finished (VOD) stream now gets its own clip timeline (see above), but
   the elapsed-time display during the download still counts up like a
   stopwatch rather than showing real download progress (e.g. "record
