@@ -22,6 +22,10 @@ rate, and supports:
 - A live preview pane so you can confirm you're pointed at the right feed
 - Custom output file name and save-location picker
 - Runs unmodified on macOS and Windows (PySide6 + ffmpeg)
+- Resilient live recording: ffmpeg is told to retry a dropped/stalled
+  connection itself first; if it still exits mid-recording, the app
+  automatically starts a fresh recording (into a new file) rather than
+  just stopping with an error, up to a handful of attempts
 
 **Only use this to record streams you're authorized to capture.** It does
 not target, bypass protections for, or hardcode any particular streaming
@@ -151,10 +155,13 @@ does exactly that for you).
   connection you may want to disable it while recording (stop the app,
   or add a "pause preview during recording" toggle — the `PreviewThread`
   in `preview.py` already exposes `.stop()`).
-- There's no retry/reconnect logic if the source stream drops mid-recording
-  — ffmpeg will exit and the app will report "ffmpeg process ended." Add
-  reconnect logic in `main_window.py`'s `_tick`/`_finish_recording` if you
-  need that for long unattended recordings.
+- If the source drops mid-recording and ffmpeg's own reconnect options
+  don't save it, the app auto-restarts into a new file (see above) for up
+  to 5 attempts before giving up. A restart always starts a new file
+  rather than seamlessly continuing the old one (ffmpeg can't safely
+  resume writing into a container after a hard process exit), so a bad
+  connection can leave you with several short files instead of one long
+  one — that's the tradeoff for not losing the recording outright.
 - **Fast** mode is stream-copy only, so it can't scale resolution or fix
   up a codec the source uses — it downloads exactly what's there.
   **Convert to standard MP4** mode re-encodes, so it's CPU-bound: a long
