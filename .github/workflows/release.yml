@@ -1,0 +1,111 @@
+name: Build installers
+
+# Builds a real macOS .dmg and a real Windows Setup.exe -- each on GitHub's
+# own Mac / Windows runners, since a platform's installer has to be built
+# on that platform. Trigger it either by pushing a version tag (v1.0.0,
+# v1.2.3, ...), which also publishes a GitHub Release with both installers
+# attached, or manually from the Actions tab (workflow_dispatch), which
+# just uploads them as build artifacts without creating a release.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Fetch ffmpeg (bundled into the app so users don't install it)
+        run: |
+          brew install ffmpeg
+          mkdir -p vendor
+          cp "$(brew --prefix ffmpeg)/bin/ffmpeg" vendor/ffmpeg
+          chmod +x vendor/ffmpeg
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build the .app
+        run: pyinstaller --clean --noconfirm packaging/hls_recorder.spec
+        env:
+          APP_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '0.0.0-dev' }}
+
+      - name: Package as a .dmg
+        run: |
+          mkdir -p dist/dmg
+          cp -R "dist/HLS Capture Studio.app" dist/dmg/
+          ln -s /Applications "dist/dmg/Applications"
+          hdiutil create -volname "HLS Capture Studio" \
+            -srcfolder dist/dmg -ov -format UDZO \
+            "HLS-Capture-Studio-mac.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HLS-Capture-Studio-mac
+          path: HLS-Capture-Studio-mac.dmg
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Fetch ffmpeg (bundled into the app so users don't install it)
+        shell: pwsh
+        run: |
+          choco install ffmpeg -y --no-progress
+          New-Item -ItemType Directory -Force -Path vendor | Out-Null
+          $ffmpegPath = (Get-Command ffmpeg).Source
+          Copy-Item $ffmpegPath vendor\ffmpeg.exe
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build the .exe
+        run: pyinstaller --clean --noconfirm packaging/hls_recorder.spec
+        env:
+          APP_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '0.0.0-dev' }}
+
+      - name: Compile the Setup.exe installer
+        uses: Minionguyjpro/Inno-Setup-Action@v1.2.6
+        with:
+          path: packaging/windows/setup.iss
+          options: /DMyAppVersion=${{ github.ref_type == 'tag' && github.ref_name || '0.0.0-dev' }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HLS-Capture-Studio-windows
+          path: packaging/windows/Output/*.exe
+
+  release:
+    needs: [build-macos, build-windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            HLS-Capture-Studio-mac/*.dmg
+            HLS-Capture-Studio-windows/*.exe
