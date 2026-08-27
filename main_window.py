@@ -10,21 +10,23 @@ from PySide6.QtWidgets import (
     QHBoxLayout, QGroupBox, QPlainTextEdit, QMessageBox, QFrame,
 )
 
-from hls_utils import resolve_stream, StreamProbeError
+from hls_utils import resolve_stream, probe_media_playlist, StreamProbeError
 from recorder import Recorder, RecordingConfig, RecordingError
 from preview import PreviewThread
+from timeline_widget import ClipTimeline, format_hhmmss
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("HLS Capture Studio")
-        self.resize(880, 700)
+        self.resize(880, 760)
 
         self.recorder: Recorder | None = None
         self.preview_thread: PreviewThread | None = None
         self.resolved_url: str | None = None
         self.needs_scaling = False
+        self.is_vod = False
 
         self.elapsed_seconds = 0
         self.record_timer = QTimer(self)
@@ -72,6 +74,18 @@ class MainWindow(QMainWindow):
         self.preview_label.setFrameShape(QFrame.Shape.Box)
         preview_layout.addWidget(self.preview_label)
         root.addWidget(preview_box, 1)
+
+        # --- Clip selection (VOD only) ---
+        self.clip_box = QGroupBox("Clip selection (finished/VOD streams only)")
+        clip_layout = QVBoxLayout(self.clip_box)
+        self.clip_checkbox = QCheckBox("Trim to the selected clip instead of downloading the whole stream")
+        self.clip_checkbox.setEnabled(False)
+        self.clip_checkbox.toggled.connect(self._on_clip_toggle)
+        clip_layout.addWidget(self.clip_checkbox)
+        self.clip_timeline = ClipTimeline()
+        clip_layout.addWidget(self.clip_timeline)
+        self.clip_box.setVisible(False)
+        root.addWidget(self.clip_box)
 
         # --- Recording options ---
         options_box = QGroupBox("Recording options")
@@ -195,10 +209,41 @@ class MainWindow(QMainWindow):
         if all_variants:
             info += "\nAll available renditions: " + "; ".join(v.label() for v in all_variants)
 
+        # Finished (VOD) streams carry a fixed, known-length playlist --
+        # probe for that so the clip selector can be offered. A live
+        # stream's sliding-window playlist has no fixed timeline to clip
+        # from, so this is skipped (or fails harmlessly) for those.
+        try:
+            playlist_info = probe_media_playlist(resolved_url)
+        except StreamProbeError:
+            playlist_info = None
+
+        self.is_vod = bool(playlist_info and playlist_info.is_vod and playlist_info.duration_seconds)
+        if self.is_vod:
+            self.clip_box.setVisible(True)
+            self.clip_checkbox.setEnabled(True)
+            self.clip_timeline.set_duration(playlist_info.duration_seconds)
+            info += (
+                f"\nFinished stream, {format_hhmmss(playlist_info.duration_seconds)} "
+                f"total -- clip selection available below."
+            )
+        else:
+            self.clip_box.setVisible(False)
+            self.clip_checkbox.setChecked(False)
+            self.clip_checkbox.setEnabled(False)
+
         self.stream_info_label.setText(info)
         self.start_btn.setEnabled(True)
         self._start_preview(resolved_url)
         self._log(f"Loaded stream: {resolved_url}")
+
+    def _on_clip_toggle(self, checked: bool):
+        # Clip length and the manual auto-stop timer both drive ffmpeg's
+        # `-t`, so they're mutually exclusive -- picking one disables the
+        # other rather than letting them silently conflict.
+        self.timer_checkbox.setEnabled(not checked)
+        if checked:
+            self.timer_checkbox.setChecked(False)
 
     def _start_preview(self, url: str):
         self._stop_preview()
@@ -232,7 +277,16 @@ class MainWindow(QMainWindow):
             mode, segment_seconds = "segment", 300
 
         duration_seconds = None
-        if self.timer_checkbox.isChecked():
+        start_seconds = None
+        if self.clip_checkbox.isChecked() and self.is_vod:
+            start_seconds = self.clip_timeline.start_seconds
+            duration_seconds = self.clip_timeline.end_seconds - self.clip_timeline.start_seconds
+            self._log(
+                f"Clipping {format_hhmmss(start_seconds)} -> "
+                f"{format_hhmmss(self.clip_timeline.end_seconds)} "
+                f"({format_hhmmss(duration_seconds)} long)."
+            )
+        elif self.timer_checkbox.isChecked():
             duration_seconds = self.timer_spin.value() * 60
 
         config = RecordingConfig(
@@ -242,6 +296,7 @@ class MainWindow(QMainWindow):
             mode=mode,
             segment_seconds=segment_seconds,
             duration_seconds=duration_seconds,
+            start_seconds=start_seconds,
             needs_scaling=self.needs_scaling,
         )
 
@@ -293,7 +348,10 @@ class MainWindow(QMainWindow):
         hrs, mins = divmod(mins, 60)
         text = f"Recording... {hrs:02d}:{mins:02d}:{secs:02d}"
         if self.recorder and self.recorder.config.duration_seconds:
-            total = self.recorder.config.duration_seconds
+            # duration_seconds may be a float (clip length from the
+            # timeline selector) rather than the whole-minute int the
+            # manual timer always produces -- round down for display.
+            total = int(self.recorder.config.duration_seconds)
             remaining = max(total - self.elapsed_seconds, 0)
             rmins, rsecs = divmod(remaining, 60)
             rhrs, rmins = divmod(rmins, 60)
