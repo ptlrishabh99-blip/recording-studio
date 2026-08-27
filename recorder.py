@@ -1,9 +1,12 @@
 """ffmpeg-backed capture engine.
 
-Handles three concerns:
+Handles four concerns:
   * Full-file recording (one continuous .mp4)
   * Segmented recording (fixed-length clips, e.g. 3 or 5 minutes each)
   * An optional overall duration limit ("recording timer")
+  * Clipping a specific start/end range out of a finished (VOD) source,
+    driven by the timeline selector in the UI (`start_seconds` +
+    `duration_seconds` together)
 
 Every recording is re-encoded to a standard H.264/AAC MP4 with libx264 and
 `-vsync vfr`, so the output plays back reliably anywhere regardless of the
@@ -97,7 +100,8 @@ class RecordingConfig:
     base_filename: str
     mode: str = "full"          # "full" | "segment"
     segment_seconds: int = 180  # 180 (3 min) or 300 (5 min) when mode == "segment"
-    duration_seconds: Optional[int] = None  # overall recording timer, if any
+    duration_seconds: Optional[float] = None  # overall recording timer, or clip length when clipping
+    start_seconds: Optional[float] = None  # clip start offset into a VOD source, if clipping
     needs_scaling: bool = False  # add a scale-to-1080p filter (recording always re-encodes regardless)
 
 
@@ -127,7 +131,15 @@ class Recorder:
         ffmpeg = find_ffmpeg()
         output_path = self._build_output_path()
 
-        cmd = [ffmpeg, "-y", "-i", cfg.stream_url]
+        cmd = [ffmpeg, "-y"]
+        if cfg.start_seconds:
+            # An input-side -ss (before -i) lets ffmpeg's HLS demuxer skip
+            # straight to the segment containing this timestamp instead of
+            # fetching everything from the start of the playlist -- the
+            # key to clipping a range out of a VOD without downloading the
+            # whole thing first.
+            cmd += ["-ss", f"{cfg.start_seconds:.3f}"]
+        cmd += ["-i", cfg.stream_url]
 
         # Always re-encode to a standard, universally-playable H.264/AAC
         # MP4 -- never a raw `-c copy` remux of whatever codec the source
@@ -142,7 +154,7 @@ class Recorder:
         ]
 
         if cfg.duration_seconds:
-            cmd += ["-t", str(cfg.duration_seconds)]
+            cmd += ["-t", f"{cfg.duration_seconds:.3f}"]
 
         if cfg.mode == "segment":
             cmd += [
