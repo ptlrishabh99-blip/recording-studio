@@ -1,26 +1,30 @@
 """ffmpeg-backed capture engine.
 
 Handles four concerns:
-  * Full-file recording (one continuous .mp4)
+  * Full-file recording (one continuous file)
   * Segmented recording (fixed-length clips, e.g. 3 or 5 minutes each)
   * An optional overall duration limit ("recording timer")
   * Clipping a specific start/end range out of a finished (VOD) source,
     driven by the timeline selector in the UI (`start_seconds` +
     `duration_seconds` together)
 
-Every recording is re-encoded to a standard H.264/AAC MP4 with libx264 and
-`-vsync vfr`, so the output plays back reliably anywhere regardless of the
-source's original codec, and still follows the source's natural, variable
-frame timing instead of being forced to a constant fps. If the chosen
-rendition isn't already 1080p, a scale filter is added to bring it there;
-if it's already 1080p, the encode happens at that native resolution with
-no scaling step.
+Two output formats, chosen per-recording via `RecordingConfig.output_format`:
+  * "fast" (default) -- a raw `-c copy` remux: no re-encoding at all, so
+    it downloads/records as fast as your connection and disk allow and
+    keeps the source's original codec, resolution and frame timing
+    exactly as-is. This is the right choice for "just grab it, quickly."
+  * "mp4" -- re-encodes to a standard, universally-playable H.264/AAC MP4
+    with libx264 and `-vsync vfr` (so it still follows the source's
+    natural, variable frame timing instead of being forced to a constant
+    fps), regardless of the source's original codec. Slower and CPU-bound,
+    but guarantees the output plays back anywhere. If the chosen rendition
+    isn't already 1080p, a scale filter is added to bring it there.
 
-This also means the same "Start recording" flow doubles as a "download
-and convert" tool for finished (VOD) streams: point it at an `.m3u8` whose
-playlist is already complete (ends with `#EXT-X-ENDLIST`) and ffmpeg races
-through the existing segments as fast as your connection and CPU allow
-instead of waiting in real time.
+This also means the same "Start recording" flow doubles as a "download"
+tool for finished (VOD) streams: point it at an `.m3u8` whose playlist is
+already complete (ends with `#EXT-X-ENDLIST`) and ffmpeg races through the
+existing segments instead of waiting in real time -- "fast" mode races
+through them fastest since there's no encoding work to do.
 """
 from __future__ import annotations
 
@@ -102,7 +106,8 @@ class RecordingConfig:
     segment_seconds: int = 180  # 180 (3 min) or 300 (5 min) when mode == "segment"
     duration_seconds: Optional[float] = None  # overall recording timer, or clip length when clipping
     start_seconds: Optional[float] = None  # clip start offset into a VOD source, if clipping
-    needs_scaling: bool = False  # add a scale-to-1080p filter (recording always re-encodes regardless)
+    output_format: str = "fast"  # "fast" (stream copy, original codec, no re-encode) | "mp4" (always re-encode to H.264/AAC)
+    needs_scaling: bool = False  # add a scale-to-1080p filter -- only applies when output_format == "mp4"
 
 
 class Recorder:
@@ -141,17 +146,24 @@ class Recorder:
             cmd += ["-ss", f"{cfg.start_seconds:.3f}"]
         cmd += ["-i", cfg.stream_url]
 
-        # Always re-encode to a standard, universally-playable H.264/AAC
-        # MP4 -- never a raw `-c copy` remux of whatever codec the source
-        # happens to use. Only add the scale filter when the source isn't
-        # already at 1080p; otherwise this encodes at its native size.
-        if cfg.needs_scaling:
-            cmd += ["-vf", "scale=-2:1080"]
-        cmd += [
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-            "-vsync", "vfr",
-            "-c:a", "aac", "-b:a", "192k",
-        ]
+        if cfg.output_format == "mp4":
+            # Re-encode to a standard, universally-playable H.264/AAC MP4.
+            # Only add the scale filter when the source isn't already at
+            # 1080p; otherwise this encodes at its native size.
+            if cfg.needs_scaling:
+                cmd += ["-vf", "scale=-2:1080"]
+            cmd += [
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                "-vsync", "vfr",
+                "-c:a", "aac", "-b:a", "192k",
+            ]
+        else:
+            # "fast": raw stream copy, no re-encoding -- keeps the
+            # source's original codec/resolution/frame timing exactly as
+            # it is, and is limited only by download speed and disk I/O
+            # rather than CPU. Scaling is not possible without re-encoding,
+            # so `needs_scaling` is ignored in this mode.
+            cmd += ["-c", "copy"]
 
         if cfg.duration_seconds:
             cmd += ["-t", f"{cfg.duration_seconds:.3f}"]
