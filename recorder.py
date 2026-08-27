@@ -5,11 +5,19 @@ Handles three concerns:
   * Segmented recording (fixed-length clips, e.g. 3 or 5 minutes each)
   * An optional overall duration limit ("recording timer")
 
-Recording is done with `-c copy` (lossless, no re-encode, original frame
-timing preserved) whenever the chosen rendition is already 1080p. If the
-source needs to be scaled to reach 1080p, it falls back to an x264
-transcode with `-vsync vfr` so the output still uses the source's natural,
-variable frame timing instead of being forced to a constant fps.
+Every recording is re-encoded to a standard H.264/AAC MP4 with libx264 and
+`-vsync vfr`, so the output plays back reliably anywhere regardless of the
+source's original codec, and still follows the source's natural, variable
+frame timing instead of being forced to a constant fps. If the chosen
+rendition isn't already 1080p, a scale filter is added to bring it there;
+if it's already 1080p, the encode happens at that native resolution with
+no scaling step.
+
+This also means the same "Start recording" flow doubles as a "download
+and convert" tool for finished (VOD) streams: point it at an `.m3u8` whose
+playlist is already complete (ends with `#EXT-X-ENDLIST`) and ffmpeg races
+through the existing segments as fast as your connection and CPU allow
+instead of waiting in real time.
 """
 from __future__ import annotations
 
@@ -90,7 +98,7 @@ class RecordingConfig:
     mode: str = "full"          # "full" | "segment"
     segment_seconds: int = 180  # 180 (3 min) or 300 (5 min) when mode == "segment"
     duration_seconds: Optional[int] = None  # overall recording timer, if any
-    needs_transcode: bool = False
+    needs_scaling: bool = False  # add a scale-to-1080p filter (recording always re-encodes regardless)
 
 
 class Recorder:
@@ -121,15 +129,17 @@ class Recorder:
 
         cmd = [ffmpeg, "-y", "-i", cfg.stream_url]
 
-        if cfg.needs_transcode:
-            cmd += [
-                "-vf", "scale=-2:1080",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-                "-vsync", "vfr",
-                "-c:a", "aac", "-b:a", "192k",
-            ]
-        else:
-            cmd += ["-c", "copy"]
+        # Always re-encode to a standard, universally-playable H.264/AAC
+        # MP4 -- never a raw `-c copy` remux of whatever codec the source
+        # happens to use. Only add the scale filter when the source isn't
+        # already at 1080p; otherwise this encodes at its native size.
+        if cfg.needs_scaling:
+            cmd += ["-vf", "scale=-2:1080"]
+        cmd += [
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+            "-vsync", "vfr",
+            "-c:a", "aac", "-b:a", "192k",
+        ]
 
         if cfg.duration_seconds:
             cmd += ["-t", str(cfg.duration_seconds)]
